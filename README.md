@@ -18,7 +18,8 @@ Plugin ini berfokus secara ketat pada area rentan tempat pengguna mengunggah ber
 
 ## 🚀 Cara Instalasi & Aktivasi
 
-1.  Unduh/salin folder `amz_file_scanner` ke direktori plugin SLiMS Anda:
+1.  👉 **[Unduh amz_file_scanner_v1.zip](https://github.com/adeism/slims_amz_file_scanner/releases/download/slims/amz_file_scanner_v1.zip)**
+ke direktori plugin SLiMS Anda:
     ```
     slims/plugins/amz_file_scanner/
     ```
