@@ -128,8 +128,10 @@ $paginatedResults = array_slice($findings, $offset, $perPage);
                         <option value="images/docs" <?= $targetDir === 'images/docs' ? 'selected' : '' ?>>images/docs (Cover Buku / Bibliografi)</option>
                         <option value="images/persons" <?= $targetDir === 'images/persons' ? 'selected' : '' ?>>images/persons (Foto Anggota)</option>
                         <option value="repository" <?= $targetDir === 'repository' ? 'selected' : '' ?>>repository (Berkas Lampiran Dokumen / PDF)</option>
+                        <option value="images" <?= $targetDir === 'images' ? 'selected' : '' ?>>images (Seluruh Direktori Gambar &amp; Aset)</option>
+                        <option value="files" <?= $targetDir === 'files' ? 'selected' : '' ?>>files (Seluruh Direktori Berkas, Template &amp; Unggahan)</option>
                     </select>
-                    <small class="text-muted"><?= __('Pilih direktori unggahan publik SLiMS yang ingin dipindai.') ?></small>
+                    <small class="text-muted"><?= __('Pilih direktori SLiMS yang ingin dipindai secara menyeluruh.') ?></small>
                 </div>
                 
                 <div class="col-md-6 form-group mb-3">

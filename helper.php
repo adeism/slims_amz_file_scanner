@@ -79,12 +79,13 @@ function amzscannerAllowedDirs(): array {
         'images/docs',
         'images/persons',
         'repository',
-        'images'
+        'images',
+        'files'
     ];
 }
 
 function amzscannerIsStrictImageDir(string $dir): bool {
-    return in_array($dir, ['images/docs', 'images/persons', 'images'], true);
+    return in_array($dir, ['images/docs', 'images/persons'], true);
 }
 
 function amzscannerDangerousExtensions(): array {
@@ -100,7 +101,7 @@ function amzscannerWebXssExtensions(): array {
 }
 
 function amzscannerAllowedTypes(): array {
-    return ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    return ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'];
 }
 
 function amzscannerResolvePhysicalPath(string $filePath, string $targetDir): string {
@@ -310,11 +311,8 @@ function amzscannerGetFilesRecursive(string $dirPath): array {
     $items = scandir($dirPath);
     if (!$items) return [];
 
-    // Skip internal SLiMS system directories if scanning root
-    $excludedDirs = ['.', '..', 'quarantine', 'backup', 'cache', 'tntsearch', 'membercard', 'reports', 'swfs', 'chat', 'akses_layanan'];
-
     foreach ($items as $item) {
-        if (in_array($item, $excludedDirs, true)) continue;
+        if ($item === '.' || $item === '..' || $item === 'quarantine') continue;
         $fullPath = $dirPath . DIRECTORY_SEPARATOR . $item;
         if (is_dir($fullPath)) {
             $results = array_merge($results, amzscannerGetFilesRecursive($fullPath));
@@ -325,12 +323,198 @@ function amzscannerGetFilesRecursive(string $dirPath): array {
     return $results;
 }
 
+// ── Smart Context-Aware File Inspector ─────────────────────────────────────
+function amzscannerInspectFile(string $fullPath, string $relativePath, bool $isStrict, array $forbiddenPatterns): ?array {
+    $filename = basename($fullPath);
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    $normRel = str_replace('\\', '/', $relativePath);
+
+    // Standard index files in upload root (< 500 bytes) are safe placeholders
+    if (in_array($filename, ['index.php', 'index.html'], true) && filesize($fullPath) < 500) {
+        return null;
+    }
+
+    // Special check for .htaccess
+    if ($filename === '.htaccess') {
+        $htaccessIssues = amzscannerInspectHtaccess($fullPath);
+        if (!empty($htaccessIssues)) {
+            return [
+                'file'   => $normRel,
+                'mime'   => 'text/plain',
+                'status' => 'danger',
+                'msgs'   => $htaccessIssues,
+                'action_done' => ''
+            ];
+        }
+        return null;
+    }
+
+    // Standard font binary extensions
+    if (in_array($ext, ['ttf', 'woff', 'woff2', 'eot', 'otf'], true)) {
+        return null;
+    }
+
+    // SVG Files: Check for active XSS payloads (only flag if malicious scripts present)
+    if ($ext === 'svg') {
+        $svgXssPatterns = ['<script', 'onload=', 'onerror=', 'onclick=', 'javascript:', 'xlink:href="javascript', 'eval('];
+        $matchedXss = amzscannerFileContainsPattern($fullPath, $svgXssPatterns, 1048576);
+        if (!empty($matchedXss)) {
+            return [
+                'file'   => $normRel,
+                'mime'   => 'image/svg+xml',
+                'status' => 'danger',
+                'msgs'   => array_map(fn($p) => 'Payload XSS "' . htmlspecialchars($p, ENT_QUOTES, 'UTF-8') . '" pada berkas SVG', $matchedXss),
+                'action_done' => ''
+            ];
+        }
+        return null; // Clean vector graphic/font
+    }
+
+    // Check for double extension patterns (e.g. photo.php.jpg, doc.pdf.exe)
+    $dangerousExts = amzscannerDangerousExtensions();
+    $parts = explode('.', $filename);
+    if (count($parts) > 2) {
+        $secondLastExt = strtolower($parts[count($parts) - 2]);
+        if (in_array($secondLastExt, $dangerousExts, true)) {
+            return [
+                'file'   => $normRel,
+                'mime'   => 'application/octet-stream',
+                'status' => 'danger',
+                'msgs'   => ['Pola ekstensi ganda mencurigakan (*.' . htmlspecialchars($secondLastExt, ENT_QUOTES, 'UTF-8') . '.' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')'],
+                'action_done' => ''
+            ];
+        }
+    }
+
+    // Recognized SLiMS Membercard Templates (files/membercard/**)
+    if (strpos($normRel, 'membercard/') !== false) {
+        $legitimateMembercardFiles = ['membercard.php', 'tinfo.inc.php', 'individual-membercard.php'];
+        if (in_array($filename, $legitimateMembercardFiles, true)) {
+            // Check for actual backdoor / web shell execution injection
+            $backdoorSignatures = [
+                'shell_exec', 'passthru', 'system(', 'popen(', 'proc_open(',
+                'eval(base64_decode', 'eval(gzinflate', 'eval($_POST', 'eval($_GET', 'eval($_REQUEST',
+                'assert($_POST', 'assert($_GET', 'c99shell', 'r57shell', 'wso_version'
+            ];
+            $matchedBackdoors = amzscannerFileContainsPattern($fullPath, $backdoorSignatures, 1048576);
+            if (!empty($matchedBackdoors)) {
+                return [
+                    'file'   => $normRel,
+                    'mime'   => 'text/x-php',
+                    'status' => 'danger',
+                    'msgs'   => array_map(fn($p) => 'Injeksi backdoor "' . htmlspecialchars($p, ENT_QUOTES, 'UTF-8') . '" pada template kartu anggota', $matchedBackdoors),
+                    'action_done' => ''
+                ];
+            }
+            return null; // Legitimate SLiMS member card template
+        }
+        // Unknown/unauthorized PHP script inside membercard folder
+        if (in_array($ext, $dangerousExts, true)) {
+            return [
+                'file'   => $normRel,
+                'mime'   => 'text/x-php',
+                'status' => 'danger',
+                'msgs'   => ['Berkas PHP tidak dikenal di folder template (' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . ')'],
+                'action_done' => ''
+            ];
+        }
+    }
+
+    // Recognized SLiMS Report Static HTML Files (files/reports/**)
+    if (strpos($normRel, 'reports/') !== false) {
+        if (in_array($ext, ['html', 'htm', 'csv', 'txt'], true)) {
+            // Check for malicious XSS/phishing/eval (ignore safe self.print())
+            $maliciousReportPatterns = [
+                'eval(', 'document.cookie', '<iframe', 'window.location.replace',
+                'phpinfo()', 'shell_exec', 'system(', 'base64_decode'
+            ];
+            $matched = amzscannerFileContainsPattern($fullPath, $maliciousReportPatterns, 1048576);
+            if (!empty($matched)) {
+                return [
+                    'file'   => $normRel,
+                    'mime'   => 'text/html',
+                    'status' => 'danger',
+                    'msgs'   => array_map(fn($p) => 'Pola berbahaya "' . htmlspecialchars($p, ENT_QUOTES, 'UTF-8') . '" pada berkas laporan', $matched),
+                    'action_done' => ''
+                ];
+            }
+            return null; // Safe SLiMS generated print report
+        }
+    }
+
+    // Check for dangerous executable extensions anywhere else in upload directories
+    if (in_array($ext, $dangerousExts, true)) {
+        return [
+            'file'   => $normRel,
+            'mime'   => 'text/x-php',
+            'status' => 'danger',
+            'msgs'   => ['Berkas skrip/executable terlarang (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')'],
+            'action_done' => ''
+        ];
+    }
+
+    // Check Web Script / HTML extensions in strict upload folders (images/docs, images/persons, repository)
+    $webXssExts = amzscannerWebXssExtensions();
+    if (in_array($ext, $webXssExts, true) && strpos($normRel, 'reports/') === false) {
+        return [
+            'file'   => $normRel,
+            'mime'   => 'text/html',
+            'status' => 'danger',
+            'msgs'   => ['Berkas skrip web/HTML di folder unggahan (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')'],
+            'action_done' => ''
+        ];
+    }
+
+    $finfo    = new finfo(FILEINFO_MIME_TYPE);
+    $mimeType = $finfo->file($fullPath) ?: 'application/octet-stream';
+    $allowedTypes = amzscannerAllowedTypes();
+
+    // Strict Image Folders (images/docs, images/persons)
+    if ($isStrict) {
+        if (in_array($mimeType, $allowedTypes, true)) {
+            // Check for embedded PHP open tag or shell payloads
+            $matchedPatterns = amzscannerFileContainsPattern($fullPath, $forbiddenPatterns, 1048576);
+            if (!empty($matchedPatterns)) {
+                return [
+                    'file'   => $normRel,
+                    'mime'   => $mimeType,
+                    'status' => 'danger',
+                    'msgs'   => array_map(fn($p) => 'Pola payload "' . htmlspecialchars($p, ENT_QUOTES, 'UTF-8') . '" terdeteksi pada gambar', $matchedPatterns),
+                    'action_done' => ''
+                ];
+            }
+            return null; // Safe image
+        } else {
+            return [
+                'file'   => $normRel,
+                'mime'   => $mimeType,
+                'status' => 'danger',
+                'msgs'   => ['Tipe MIME tidak valid untuk folder gambar (' . htmlspecialchars($mimeType, ENT_QUOTES, 'UTF-8') . ')'],
+                'action_done' => ''
+            ];
+        }
+    } else {
+        // General folders: Check scannable files for shell payloads
+        $scannableExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'txt', 'csv', 'xml'];
+        if (in_array($ext, $scannableExts, true)) {
+            $matchedPatterns = amzscannerFileContainsPattern($fullPath, $forbiddenPatterns, 2097152);
+            if (!empty($matchedPatterns)) {
+                return [
+                    'file'   => $normRel,
+                    'mime'   => $mimeType,
+                    'status' => 'danger',
+                    'msgs'   => array_map(fn($p) => 'Pola payload "' . htmlspecialchars($p, ENT_QUOTES, 'UTF-8') . '" terdeteksi', $matchedPatterns),
+                    'action_done' => ''
+                ];
+            }
+        }
+    }
+
+    return null; // Safe
+}
+
 // ── Directory Scanner Engine ───────────────────────────────────────────────
 function amzscannerScanDir(string $dirPath, string $dirKey, array $forbiddenPatterns, bool $corrective = false): array {
-    $allowedTypes  = amzscannerAllowedTypes();
-    $dangerousExts = amzscannerDangerousExtensions();
-    $webXssExts    = amzscannerWebXssExtensions();
-    
     $normDirPath = amzscannerNormalizePath($dirPath);
     
     if (!is_dir($normDirPath)) {
@@ -356,134 +540,46 @@ function amzscannerScanDir(string $dirPath, string $dirKey, array $forbiddenPatt
 
     foreach ($allFiles as $fullPath) {
         @set_time_limit(30);
-        $filename = basename($fullPath);
         $totalCount++;
 
-        // Calculate clean relative path with forward slashes for clean UI display
+        // Calculate clean relative path with forward slashes
         $normFullPath = amzscannerNormalizePath($fullPath);
         $rawRelative  = ltrim(substr($normFullPath, strlen($normDirPath)), DIRECTORY_SEPARATOR);
         $relativePath = str_replace('\\', '/', $rawRelative);
 
-        // Special check for .htaccess
-        if ($filename === '.htaccess') {
-            $htaccessIssues = amzscannerInspectHtaccess($normFullPath);
-            if (!empty($htaccessIssues)) {
-                $dangerCount++;
-                $findings[] = [
-                    'file'        => $relativePath,
-                    'mime'        => 'text/plain',
-                    'status'      => 'danger',
-                    'msgs'        => $htaccessIssues,
-                    'action_done' => ''
-                ];
-            }
-            continue;
-        }
-
-        // Standard index files in upload root can be skipped if clean
-        if (in_array($filename, ['index.php', 'index.html'], true)) {
-            $fsize = filesize($normFullPath);
-            if ($fsize < 500) {
-                continue; // Safe empty index placeholder
-            }
-        }
-
-        $finfo = new finfo(FILEINFO_MIME_TYPE);
-        $mimeType = $finfo->file($normFullPath) ?: 'application/octet-stream';
-        
-        $illegal    = false;
-        $suspicious = false;
-        $msgs       = [];
-        $actionDone = '';
-
-        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        
-        // 1. Check for dangerous executable extensions
-        if (in_array($ext, $dangerousExts, true)) {
-            $illegal = true;
-            $msgs[]  = 'Berkas skrip/executable terlarang (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
-        } elseif (in_array($ext, $webXssExts, true)) {
-            $suspicious = true;
-            $msgs[]     = 'Berkas skrip web/HTML (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
-        }
-
-        // 2. Check for double extension patterns (e.g. evil.php.jpg, photo.jpg.exe)
-        $parts = explode('.', $filename);
-        if (count($parts) > 2) {
-            $secondLastExt = strtolower($parts[count($parts) - 2]);
-            if (in_array($secondLastExt, $dangerousExts, true)) {
-                $suspicious = true;
-                $msgs[]     = 'Pola ekstensi ganda mencurigakan (*.' . htmlspecialchars($secondLastExt, ENT_QUOTES, 'UTF-8') . '.' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
-            }
-        }
-
-        // 3. Strict Image Directory Verifications
-        if ($isStrict) {
-            if (in_array($mimeType, $allowedTypes, true)) {
-                // Scan for embedded PHP or script signatures in image header/metadata
-                $matchedPatterns = amzscannerFileContainsPattern($normFullPath, $forbiddenPatterns, 1048576);
-                if (!empty($matchedPatterns)) {
-                    $suspicious = true;
-                    foreach ($matchedPatterns as $mp) {
-                        $msgs[] = 'Pola payload "' . htmlspecialchars($mp, ENT_QUOTES, 'UTF-8') . '" terdeteksi';
-                    }
-                }
-            } else {
-                // Not a valid image in strict image folder
-                $illegal = true;
-                $msgs[]  = 'Tipe MIME tidak valid untuk folder gambar (' . htmlspecialchars($mimeType, ENT_QUOTES, 'UTF-8') . ')';
-            }
-        } else {
-            // Repository directory: check scannable text or script files
-            $scannableExts = array_merge($dangerousExts, $webXssExts, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'txt', 'csv', 'xml']);
-            if (in_array($ext, $scannableExts, true)) {
-                $matchedPatterns = amzscannerFileContainsPattern($normFullPath, $forbiddenPatterns, 2097152);
-                if (!empty($matchedPatterns)) {
-                    $suspicious = true;
-                    foreach ($matchedPatterns as $mp) {
-                        $msgs[] = 'Pola "' . htmlspecialchars($mp, ENT_QUOTES, 'UTF-8') . '" terdeteksi';
-                    }
-                }
-            }
-        }
-
-        if ($illegal || $suspicious) {
-            $status = 'danger';
+        $threat = amzscannerInspectFile($normFullPath, $relativePath, $isStrict, $forbiddenPatterns);
+        if ($threat !== null) {
             $dangerCount++;
 
-            // Auto-corrective handling during scan if requested
             if ($corrective) {
                 amzscannerQuarantineFile($normFullPath);
-                if ($illegal) {
+                $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
+                $dangerousExts = amzscannerDangerousExtensions();
+                $finfo = new finfo(FILEINFO_MIME_TYPE);
+                $mimeType = $finfo->file($normFullPath) ?: 'application/octet-stream';
+                $allowedTypes = amzscannerAllowedTypes();
+
+                if (in_array($ext, $dangerousExts, true) || !in_array($mimeType, $allowedTypes, true)) {
                     if (@unlink($normFullPath)) {
-                        $actionDone = 'File dihapus (Dikarantina)';
+                        $threat['action_done'] = 'File dihapus (Dikarantina)';
                     } else {
-                        $actionDone = 'Gagal dihapus (Izin berkas)';
+                        $threat['action_done'] = 'Gagal dihapus (Izin berkas)';
                     }
-                } elseif ($suspicious) {
-                    $sanitized = false;
-                    if (in_array($mimeType, $allowedTypes, true)) {
-                        $sanitized = amzscannerSanitizeImage($normFullPath, $mimeType);
-                    }
+                } else {
+                    $sanitized = amzscannerSanitizeImage($normFullPath, $mimeType);
                     if ($sanitized) {
-                        $actionDone = 'Gambar dibersihkan';
+                        $threat['action_done'] = 'Gambar dibersihkan';
                     } else {
                         if (@unlink($normFullPath)) {
-                            $actionDone = 'File dihapus (Dikarantina)';
+                            $threat['action_done'] = 'File dihapus (Dikarantina)';
                         } else {
-                            $actionDone = 'Gagal dibersihkan/dihapus';
+                            $threat['action_done'] = 'Gagal dibersihkan/dihapus';
                         }
                     }
                 }
             }
 
-            $findings[] = [
-                'file'        => $relativePath,
-                'mime'        => $mimeType,
-                'status'      => $status,
-                'msgs'        => $msgs,
-                'action_done' => $actionDone,
-            ];
+            $findings[] = $threat;
         }
     }
 
