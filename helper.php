@@ -58,15 +58,6 @@ function amzscannerLoadSettings(): array {
         'extra_patterns' => '',
     ];
 
-    // Priority 1: Check from SLiMS setting if available
-    if (class_exists('utility') && method_exists('utility', 'loadSettings')) {
-        $dbSetting = @utility::loadSettings('amzscanner_config');
-        if (!empty($dbSetting) && is_array($dbSetting)) {
-            return array_merge($defaults, $dbSetting);
-        }
-    }
-
-    // Priority 2: Fallback to local settings.json
     $path = __DIR__ . '/settings.json';
     if (file_exists($path)) {
         $content = @file_get_contents($path);
