@@ -98,8 +98,10 @@ if ($can_write && isset($_POST['apply_corrective'])) {
         }
     }
 
-    header('Location: ' . amzscannerRedirect('', ['success' => 'corrective_done']));
-    exit;
+    $success_msg = __('Tindakan korektif berhasil diterapkan! Berkas telah dicadangkan ke folder karantina dan dibersihkan/dihapus dari server.');
+    if (class_exists('utility') && method_exists('utility', 'jsToastr')) {
+        utility::jsToastr(__('AMZ File Scanner'), $success_msg, 'success');
+    }
 }
 
 // Export and Print Actions

@@ -1,0 +1,5 @@
+# Local plugin settings & temporary files
+settings.json
+*.bak
+.DS_Store
+Thumbs.db

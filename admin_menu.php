@@ -8,8 +8,14 @@
 defined('INDEX_AUTH') OR die('Direct access not allowed');
 
 global $dbs, $sysconf;
+
+// Start SLiMS admin session
 require_once SB . 'admin/default/session.inc.php';
-require_once SB . 'admin/default/session_check.inc.php';
+
+// Check if user is logged in
+if (!isset($_SESSION['uid']) || empty($_SESSION['uid'])) {
+    die('<div class="alert alert-danger m-3">' . __('You are not authorized to view this section') . '</div>');
+}
 
 require_once __DIR__ . '/helper.php';
 
@@ -20,21 +26,21 @@ if (!$can_read) {
     die('<div class="alert alert-danger m-3">' . __('You do not have permission to access this module!') . '</div>');
 }
 
-// Process write actions & exports
-require_once __DIR__ . '/inc/admin_actions.inc.php';
-
 // Flash Messages
 $success_msg = '';
 $error_msg   = '';
 
-if (!empty($_GET['success'])) {
+// Process write actions & exports
+require_once __DIR__ . '/inc/admin_actions.inc.php';
+
+if (!empty($_GET['success']) && empty($success_msg)) {
     $map = [
         'settings_saved'  => __('Pengaturan berhasil disimpan.'),
         'corrective_done' => __('Tindakan korektif berhasil diterapkan! Berkas telah dicadangkan ke folder karantina dan dibersihkan/dihapus dari server.'),
     ];
     $success_msg = $map[$_GET['success']] ?? '';
 }
-if (!empty($_GET['error'])) {
+if (!empty($_GET['error']) && empty($error_msg)) {
     $map = [
         'file_delete_failed'  => __('Gagal memproses berkas. Pastikan izin akses file (file permissions) di server mencukupi.'),
         'invalid_delete_path' => __('Akses ditolak! Jalur berkas tidak valid atau berada di luar folder unggahan yang diizinkan.'),
