@@ -29,13 +29,17 @@ function amzscannerValidateCsrf(): bool {
 }
 
 // ── Admin URL Helpers ──────────────────────────────────────────────────────
-function amzscannerAdminUrl(array $params = []): string {
-    $base = defined('AWB') ? AWB . 'plugin_container.php' : 'plugin_container.php';
-    $defaults = [
+function amzscannerAdminUrl(array $params = [], bool $reset = false): string {
+    if (function_exists('pluginUrl')) {
+        return pluginUrl($params, $reset);
+    }
+    $base = $_SERVER['PHP_SELF'] ?? (defined('AWB') ? AWB . 'index.php' : 'index.php');
+    $baseParams = [
         'mod' => $_GET['mod'] ?? 'system',
-        'id'  => $_GET['id'] ?? ''
+        'id'  => $_GET['id'] ?? 'AMZ File Scanner'
     ];
-    return $base . '?' . http_build_query(array_merge($defaults, $params));
+    $query = $reset ? array_merge($baseParams, $params) : array_merge($_GET, $params);
+    return $base . '?' . http_build_query($query);
 }
 
 function amzscannerRedirect(string $view = '', array $extra = []): string {
@@ -43,7 +47,7 @@ function amzscannerRedirect(string $view = '', array $extra = []): string {
     if ($view !== '') {
         $params['view'] = $view;
     }
-    return amzscannerAdminUrl(array_merge($params, $extra));
+    return amzscannerAdminUrl(array_merge($params, $extra), true);
 }
 
 // ── Configuration Settings ─────────────────────────────────────────────────
@@ -120,8 +124,8 @@ function amzscannerResolvePhysicalPath(string $filePath, string $targetDir): str
     $normTarget = amzscannerNormalizePath(SB . $targetDir);
     $normFile   = amzscannerNormalizePath($filePath);
 
-    // If $filePath already contains $normTarget (due to absolute path formatting)
-    if (strpos($normFile, $normTarget) === 0) {
+    // If $filePath already contains $normTarget (case-insensitive for Windows)
+    if (stripos($normFile, $normTarget) === 0) {
         return $normFile;
     }
     return $normTarget . DIRECTORY_SEPARATOR . ltrim($normFile, DIRECTORY_SEPARATOR);
@@ -130,7 +134,6 @@ function amzscannerResolvePhysicalPath(string $filePath, string $targetDir): str
 function amzscannerIsValidDeletePath(string $physicalPath): bool {
     $realPath = realpath($physicalPath);
     if ($realPath === false) {
-        // In case file was already removed
         return false;
     }
 
@@ -144,7 +147,7 @@ function amzscannerIsValidDeletePath(string $physicalPath): bool {
         $allowedRealPath = realpath(SB . $dirKey);
         if ($allowedRealPath !== false) {
             $allowedWithSep = rtrim($allowedRealPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-            if (strpos($realPath, $allowedWithSep) === 0 || $realPath === $allowedRealPath) {
+            if (stripos($realPath, $allowedWithSep) === 0 || strcasecmp($realPath, $allowedRealPath) === 0) {
                 return true;
             }
         }
@@ -283,21 +286,37 @@ function amzscannerFileContainsPattern(string $filePath, array $patterns, int $m
     return $matched;
 }
 
-// Inspect .htaccess files for malicious override directives
+// Inspect .htaccess files accurately (ignores safe php_flag engine off, flags handler overrides)
 function amzscannerInspectHtaccess(string $filePath): array {
-    $dangerousDirectives = [
-        'addtype', 'sethandler', 'php_value', 'php_flag',
-        'auto_prepend_file', 'auto_append_file', 'allow from all'
-    ];
     $findings = [];
     $content = @file_get_contents($filePath);
-    if ($content !== false) {
-        foreach ($dangerousDirectives as $directive) {
-            if (stripos($content, $directive) !== false) {
-                $findings[] = 'Direktif berbahaya .htaccess (' . htmlspecialchars($directive, ENT_QUOTES, 'UTF-8') . ')';
-            }
-        }
+    if ($content === false) return [];
+
+    // Strip comments to inspect active directives only
+    $lines = explode("\n", $content);
+    $cleanLines = [];
+    foreach ($lines as $l) {
+        $l = trim($l);
+        if ($l === '' || strpos($l, '#') === 0) continue;
+        $cleanLines[] = $l;
     }
+    $cleanContent = implode("\n", $cleanLines);
+
+    // 1. Handler override to execute PHP on uploaded image files
+    if (preg_match('/(AddType|AddHandler|SetHandler)\s+.*php/i', $cleanContent, $m)) {
+        $findings[] = 'Manipulasi eksekusi PHP pada .htaccess (' . htmlspecialchars(trim($m[0]), ENT_QUOTES, 'UTF-8') . ')';
+    }
+
+    // 2. Auto prepend/append backdoor injection
+    if (preg_match('/(auto_prepend_file|auto_append_file)/i', $cleanContent, $m)) {
+        $findings[] = 'Injeksi backdoor auto_prepend/append pada .htaccess (' . htmlspecialchars(trim($m[0]), ENT_QUOTES, 'UTF-8') . ')';
+    }
+
+    // 3. php_flag engine on (re-enabling PHP execution in upload directory)
+    if (preg_match('/php_flag\s+engine\s+(on|1|true)/i', $cleanContent, $m)) {
+        $findings[] = 'Mengaktifkan kembali engine PHP pada folder upload (' . htmlspecialchars(trim($m[0]), ENT_QUOTES, 'UTF-8') . ')';
+    }
+
     return $findings;
 }
 
@@ -354,9 +373,10 @@ function amzscannerScanDir(string $dirPath, string $dirKey, array $forbiddenPatt
         $filename = basename($fullPath);
         $totalCount++;
 
-        // Calculate clean relative path
+        // Calculate clean relative path with forward slashes for clean UI display
         $normFullPath = amzscannerNormalizePath($fullPath);
-        $relativePath = ltrim(substr($normFullPath, strlen($normDirPath)), DIRECTORY_SEPARATOR);
+        $rawRelative  = ltrim(substr($normFullPath, strlen($normDirPath)), DIRECTORY_SEPARATOR);
+        $relativePath = str_replace('\\', '/', $rawRelative);
 
         // Special check for .htaccess
         if ($filename === '.htaccess') {
