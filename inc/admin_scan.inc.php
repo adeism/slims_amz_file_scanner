@@ -117,7 +117,7 @@ $paginatedResults = array_slice($findings, $offset, $perPage);
         <h5 class="mb-0 font-weight-bold">⚙️ <?= __('Pengaturan &amp; Pemindaian Berkas') ?></h5>
     </div>
     <div class="card-body p-4">
-        <form method="post" action="<?= amzscannerAdminUrl() ?>">
+        <form method="post" action="<?= amzscannerAdminUrl() ?>" class="submitViaAJAX">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(amzscannerGetCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="start_scan" value="1">
             
@@ -205,7 +205,7 @@ $paginatedResults = array_slice($findings, $offset, $perPage);
                     
                     <div class="d-flex align-items-center flex-wrap" style="gap: 8px;">
                         <?php if ($can_write): ?>
-                            <form method="post" action="<?= amzscannerAdminUrl() ?>" class="mb-0 mr-2">
+                            <form method="post" action="<?= amzscannerAdminUrl() ?>" class="submitViaAJAX mb-0 mr-2">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(amzscannerGetCsrfToken(), ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="apply_corrective" value="1">
                                 <button type="submit" class="btn btn-danger py-2 px-3 font-weight-bold shadow-sm" onclick="return confirm('<?= __('Apakah Anda yakin ingin menerapkan tindakan korektif? Sistem akan mencadangkan file ke folder karantina lalu membersihkan/menghapus berkas berbahaya.') ?>');">
@@ -214,10 +214,10 @@ $paginatedResults = array_slice($findings, $offset, $perPage);
                             </form>
                         <?php endif; ?>
                         
-                        <a href="<?= amzscannerAdminUrl(['action' => 'print_logs']) ?>" target="_blank" class="btn btn-secondary py-2 px-3 font-weight-bold mr-2">
+                        <a href="<?= amzscannerAdminUrl(['action' => 'print_logs']) ?>" target="_blank" class="btn btn-secondary notAJAX py-2 px-3 font-weight-bold mr-2">
                             🖨️ <?= __('Cetak Laporan') ?>
                         </a>
-                        <a href="<?= amzscannerAdminUrl(['action' => 'export_csv']) ?>" class="btn btn-success py-2 px-3 font-weight-bold">
+                        <a href="<?= amzscannerAdminUrl(['action' => 'export_csv']) ?>" target="_blank" class="btn btn-success notAJAX py-2 px-3 font-weight-bold">
                             📊 <?= __('Ekspor ke CSV (Excel)') ?>
                         </a>
                     </div>
@@ -231,10 +231,10 @@ $paginatedResults = array_slice($findings, $offset, $perPage);
                     </div>
                     
                     <div class="d-flex align-items-center flex-wrap" style="gap: 8px;">
-                        <a href="<?= amzscannerAdminUrl(['action' => 'print_logs']) ?>" target="_blank" class="btn btn-secondary py-2 px-3 font-weight-bold mr-2">
+                        <a href="<?= amzscannerAdminUrl(['action' => 'print_logs']) ?>" target="_blank" class="btn btn-secondary notAJAX py-2 px-3 font-weight-bold mr-2">
                             🖨️ <?= __('Cetak Laporan') ?>
                         </a>
-                        <a href="<?= amzscannerAdminUrl(['action' => 'export_csv']) ?>" class="btn btn-success py-2 px-3 font-weight-bold">
+                        <a href="<?= amzscannerAdminUrl(['action' => 'export_csv']) ?>" target="_blank" class="btn btn-success notAJAX py-2 px-3 font-weight-bold">
                             📊 <?= __('Ekspor ke CSV (Excel)') ?>
                         </a>
                     </div>

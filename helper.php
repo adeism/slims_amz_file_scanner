@@ -29,17 +29,10 @@ function amzscannerValidateCsrf(): bool {
 }
 
 // ── Admin URL Helpers ──────────────────────────────────────────────────────
-function amzscannerAdminUrl(array $params = [], bool $reset = false): string {
-    if (function_exists('pluginUrl')) {
-        return pluginUrl($params, $reset);
-    }
-    $base = $_SERVER['PHP_SELF'] ?? (defined('AWB') ? AWB . 'index.php' : 'index.php');
-    $baseParams = [
-        'mod' => $_GET['mod'] ?? 'system',
-        'id'  => $_GET['id'] ?? 'AMZ File Scanner'
-    ];
-    $query = $reset ? array_merge($baseParams, $params) : array_merge($_GET, $params);
-    return $base . '?' . http_build_query($query);
+function amzscannerAdminUrl(array $params = []): string {
+    $self  = $_SERVER['PHP_SELF'] ?? 'plugin_container.php';
+    $query = array_merge($_GET, $params);
+    return $self . '?' . http_build_query($query);
 }
 
 function amzscannerRedirect(string $view = '', array $extra = []): string {
@@ -47,7 +40,7 @@ function amzscannerRedirect(string $view = '', array $extra = []): string {
     if ($view !== '') {
         $params['view'] = $view;
     }
-    return amzscannerAdminUrl(array_merge($params, $extra), true);
+    return amzscannerAdminUrl(array_merge($params, $extra));
 }
 
 // ── Configuration Settings ─────────────────────────────────────────────────
