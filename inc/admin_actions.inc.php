@@ -1,21 +1,28 @@
 <?php
+/**
+ * AMZ File Scanner & Sanitizer - Actions Controller
+ * 
+ * Corrective actions, CSV export, and Print Log Handlers
+ */
+
 defined('INDEX_AUTH') OR die('Direct access not allowed');
 
-// Apply corrective actions on the active scan results
+// Apply corrective actions on the active scan findings
 if ($can_write && isset($_POST['apply_corrective'])) {
     if (!amzscannerValidateCsrf()) {
-        die('<div class="alert alert-danger">Invalid CSRF token!</div>');
+        die('<div class="alert alert-danger">' . __('Invalid CSRF token!') . '</div>');
     }
 
-    $results = $_SESSION['amzscanner_current_results'] ?? [];
+    $findings  = $_SESSION['amzscanner_current_findings'] ?? $_SESSION['amzscanner_current_results'] ?? [];
     $targetDir = $_SESSION['amzscanner_current_meta']['target_dir'] ?? 'images/docs';
-    $extraPatterns = $_SESSION['amzscanner_current_meta']['extra_patterns'] ?? '';
     
-    if (!empty($results)) {
-        $allowedTypes = amzscannerAllowedTypes();
-        $updated = false;
+    if (!empty($findings)) {
+        $allowedTypes  = amzscannerAllowedTypes();
+        $dangerousExts = amzscannerDangerousExtensions();
+        $isStrict      = amzscannerIsStrictImageDir($targetDir);
+        $updated       = false;
 
-        foreach ($results as &$r) {
+        foreach ($findings as &$r) {
             if ($r['status'] === 'danger' || $r['status'] === 'error') {
                 // Skip if already actioned
                 if (!empty($r['action_done'])) {
@@ -23,63 +30,47 @@ if ($can_write && isset($_POST['apply_corrective'])) {
                 }
 
                 $physicalPath = amzscannerResolvePhysicalPath($r['file'], $targetDir);
-                if (amzscannerIsValidDeletePath($physicalPath)) {
-                    if (file_exists($physicalPath)) {
+
+                if (file_exists($physicalPath)) {
+                    if (amzscannerIsValidDeletePath($physicalPath)) {
+                        // 1. Always back up to quarantine before any alteration
+                        amzscannerQuarantineFile($physicalPath);
+
                         $mimeType = $r['mime'] ?? '';
                         $ext = strtolower(pathinfo($physicalPath, PATHINFO_EXTENSION));
-                        
-                        $isStrict = amzscannerIsStrictImageDir($targetDir);
-                        
-                        $illegal = false;
-                        $suspicious = false;
 
-                        $dangerousExts = ['php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'phps', 'phar', 'sh', 'pl', 'py', 'htaccess'];
-                        $webXssExts    = ['html', 'htm', 'js'];
-
-                        if (in_array($ext, $dangerousExts, true) || in_array($ext, $webXssExts, true)) {
-                            $suspicious = true;
-                        }
-
-                        if ($isStrict) {
-                            if (!in_array($mimeType, $allowedTypes, true)) {
-                                $illegal = true;
-                            } else {
-                                $suspicious = true;
-                            }
-                        }
-
-                        if ($illegal) {
+                        // 2. Dangerous executable files must ALWAYS be deleted
+                        if (in_array($ext, $dangerousExts, true)) {
                             if (@unlink($physicalPath)) {
-                                $r['action_done'] = 'File dihapus';
+                                $r['action_done'] = 'File berbahaya dihapus (Karantina)';
                                 $updated = true;
                             } else {
-                                $r['action_done'] = 'Gagal dihapus (Izin ditolak)';
+                                $r['action_done'] = 'Gagal dihapus (Izin file server)';
                                 $updated = true;
                             }
-                        } elseif ($suspicious) {
-                            $rewrote = false;
+                        } elseif ($isStrict && !in_array($mimeType, $allowedTypes, true)) {
+                            // Non-image file in strict image folder
+                            if (@unlink($physicalPath)) {
+                                $r['action_done'] = 'File ilegal dihapus (Karantina)';
+                                $updated = true;
+                            } else {
+                                $r['action_done'] = 'Gagal dihapus (Izin file server)';
+                                $updated = true;
+                            }
+                        } else {
+                            // Legitimate image extension: attempt GD sanitization
+                            $sanitized = false;
                             if (in_array($mimeType, $allowedTypes, true)) {
-                                if ($mimeType === 'image/jpeg') {
-                                    $img = @imagecreatefromjpeg($physicalPath);
-                                    if ($img) { $rewrote = @imagejpeg($img, $physicalPath, 90); imagedestroy($img); }
-                                } elseif ($mimeType === 'image/png') {
-                                    $img = @imagecreatefrompng($physicalPath);
-                                    if ($img) { $rewrote = @imagepng($img, $physicalPath, 9); imagedestroy($img); }
-                                } elseif ($mimeType === 'image/gif') {
-                                    $img = @imagecreatefromgif($physicalPath);
-                                    if ($img) { $rewrote = @imagegif($img, $physicalPath); imagedestroy($img); }
-                                } elseif ($mimeType === 'image/webp') {
-                                    $img = @imagecreatefromwebp($physicalPath);
-                                    if ($img) { $rewrote = @imagewebp($img, $physicalPath, 80); imagedestroy($img); }
-                                }
+                                $sanitized = amzscannerSanitizeImage($physicalPath, $mimeType);
                             }
 
-                            if ($rewrote) {
-                                $r['action_done'] = 'Gambar dibersihkan';
+                            if ($sanitized) {
+                                $r['action_done'] = 'Gambar dibersihkan (Payload dibuang)';
                                 $updated = true;
                             } else {
+                                // Sanitization failed; delete with quarantine backup
                                 if (@unlink($physicalPath)) {
-                                    $r['action_done'] = 'File dihapus';
+                                    $r['action_done'] = 'File dihapus (Karantina)';
                                     $updated = true;
                                 } else {
                                     $r['action_done'] = 'Gagal dibersihkan/dihapus';
@@ -88,11 +79,11 @@ if ($can_write && isset($_POST['apply_corrective'])) {
                             }
                         }
                     } else {
-                        $r['action_done'] = 'Sudah dihapus';
+                        $r['action_done'] = 'Di luar whitelist jalur aman';
                         $updated = true;
                     }
                 } else {
-                    $r['action_done'] = 'Di luar whitelist jalur';
+                    $r['action_done'] = 'Berkas sudah tidak ada';
                     $updated = true;
                 }
             }
@@ -100,7 +91,10 @@ if ($can_write && isset($_POST['apply_corrective'])) {
         unset($r);
 
         if ($updated) {
-            $_SESSION['amzscanner_current_results'] = $results;
+            $_SESSION['amzscanner_current_findings'] = $findings;
+            if (isset($_SESSION['amzscanner_current_results'])) {
+                $_SESSION['amzscanner_current_results'] = $findings;
+            }
         }
     }
 
@@ -108,82 +102,64 @@ if ($can_write && isset($_POST['apply_corrective'])) {
     exit;
 }
 
-// Export and Print GET actions
+// Export and Print Actions
 if ($can_read && isset($_GET['action'])) {
-    if ($_GET['action'] === 'export_excel') {
-        $results = $_SESSION['amzscanner_current_results'] ?? [];
+    // ── Export to Standard CSV (RFC 4180 Compliant with UTF-8 BOM) ─────────
+    if ($_GET['action'] === 'export_excel' || $_GET['action'] === 'export_csv') {
+        $findings = $_SESSION['amzscanner_current_findings'] ?? $_SESSION['amzscanner_current_results'] ?? [];
         $targetDir = $_SESSION['amzscanner_current_meta']['target_dir'] ?? 'images/docs';
         
-        $problematicResults = array_filter($results, fn($r) => $r['status'] === 'danger' || $r['status'] === 'error');
+        $problematicResults = array_filter($findings, fn($r) => $r['status'] === 'danger' || $r['status'] === 'error');
         
-        header('Content-Type: application/vnd.ms-excel');
-        header('Content-Disposition: attachment; filename="amz_scan_report_' . date('Ymd_His') . '.xls"');
+        $filename = 'amz_scanner_report_' . date('Ymd_His') . '.csv';
+
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
         header('Pragma: no-cache');
         header('Expires: 0');
         
-        ?>
-        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-        <head>
-            <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-            <title>Laporan Temuan AMZ File Scanner</title>
-            <style>
-                table { border-collapse: collapse; width: 100%; }
-                th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-                th { background-color: #f2f2f2; }
-                .status-danger { color: #721c24; background-color: #f8d7da; font-weight: bold; }
-                .status-error { color: #721c24; background-color: #f8d7da; font-weight: bold; }
-            </style>
-        </head>
-        <body>
-            <h2>Laporan Temuan Hasil Pemindaian - AMZ File Scanner</h2>
-            <p>Dicetak pada: <?= date('Y-m-d H:i:s') ?></p>
-            <p>Target Folder: <?= htmlspecialchars($targetDir, ENT_QUOTES, 'UTF-8') ?></p>
-            <table>
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Path File (Relatif)</th>
-                        <th>MIME Type</th>
-                        <th>Status</th>
-                        <th>Keterangan / Pola Terdeteksi</th>
-                        <th>Hasil Tindakan Korektif</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($problematicResults)): ?>
-                        <tr>
-                            <td colspan="6" style="text-align: center;">Tidak ada temuan berkas bermasalah.</td>
-                        </tr>
-                    <?php else: ?>
-                        <?php 
-                        $i = 1;
-                        foreach ($problematicResults as $r): 
-                            $statusClass = 'status-danger';
-                            $details = is_array($r['msgs']) ? implode(', ', $r['msgs']) : $r['msgs'];
-                        ?>
-                            <tr>
-                                <td><?= $i++ ?></td>
-                                <td><?= htmlspecialchars($r['file'], ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars($r['mime'] ?? 'Unknown', ENT_QUOTES, 'UTF-8') ?></td>
-                                <td class="<?= $statusClass ?>"><?= htmlspecialchars(strtoupper($r['status']), ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars($details, ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars($r['action_done'] !== '' ? $r['action_done'] : 'Terdeteksi (Belum Tindakan)', ENT_QUOTES, 'UTF-8') ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </body>
-        </html>
-        <?php
+        $out = fopen('php://output', 'w');
+        // UTF-8 BOM for Excel compatibility
+        fwrite($out, "\xEF\xBB\xBF");
+
+        // Header metadata
+        fputcsv($out, ['LAPORAN TEMUAN HASIL PEMINDAIAN - AMZ FILE SCANNER']);
+        fputcsv($out, ['Tanggal Ekspor', date('Y-m-d H:i:s')]);
+        fputcsv($out, ['Folder Target', $targetDir]);
+        fputcsv($out, ['Petugas', $_SESSION['realname'] ?? $_SESSION['username'] ?? 'Admin']);
+        fputcsv($out, []); // Blank line
+
+        // Table headers
+        fputcsv($out, ['No', 'Path Berkas (Relatif)', 'Tipe MIME', 'Status', 'Keterangan Temuan', 'Hasil Tindakan Korektif']);
+
+        if (empty($problematicResults)) {
+            fputcsv($out, ['-', 'Tidak ada temuan berkas berbahaya.', '-', 'AMAN', '-', '-']);
+        } else {
+            $i = 1;
+            foreach ($problematicResults as $r) {
+                $details = is_array($r['msgs']) ? implode('; ', $r['msgs']) : ($r['msgs'] ?? '-');
+                $action  = !empty($r['action_done']) ? $r['action_done'] : 'Terdeteksi (Belum Tindakan)';
+                fputcsv($out, [
+                    $i++,
+                    $r['file'],
+                    $r['mime'] ?? 'Unknown',
+                    strtoupper($r['status']),
+                    $details,
+                    $action
+                ]);
+            }
+        }
+
+        fclose($out);
         exit;
     }
     
+    // ── Print Report View ──────────────────────────────────────────────────
     if ($_GET['action'] === 'print_logs') {
-        $results = $_SESSION['amzscanner_current_results'] ?? [];
+        $findings = $_SESSION['amzscanner_current_findings'] ?? $_SESSION['amzscanner_current_results'] ?? [];
         $targetDir = $_SESSION['amzscanner_current_meta']['target_dir'] ?? 'images/docs';
         
-        $problematicResults = array_filter($results, fn($r) => $r['status'] === 'danger' || $r['status'] === 'error');
+        $problematicResults = array_filter($findings, fn($r) => $r['status'] === 'danger' || $r['status'] === 'error');
         ?>
         <!DOCTYPE html>
         <html lang="id">
@@ -191,73 +167,79 @@ if ($can_read && isset($_GET['action'])) {
             <meta charset="UTF-8">
             <title>Cetak Laporan Temuan - AMZ File Scanner</title>
             <style>
-                body { font-family: Arial, sans-serif; font-size: 12px; line-height: 1.5; color: #333; margin: 20px; }
-                h2 { text-align: center; margin-bottom: 5px; }
-                .meta { text-align: center; margin-bottom: 20px; color: #666; }
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; font-size: 12px; line-height: 1.5; color: #222; margin: 20px; }
+                h2 { text-align: center; margin-bottom: 4px; color: #111; }
+                .meta { text-align: center; margin-bottom: 20px; color: #555; font-size: 11px; }
                 table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                th, td { border: 1px solid #333; padding: 6px 8px; text-align: left; }
-                th { background-color: #f2f2f2; }
-                .badge { display: inline-block; padding: 2px 5px; font-weight: bold; border-radius: 3px; font-size: 10px; }
+                th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; vertical-align: top; }
+                th { background-color: #f0f0f0; font-weight: bold; }
+                .badge { display: inline-block; padding: 2px 6px; font-weight: bold; border-radius: 3px; font-size: 10px; }
                 .badge-danger { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+                .badge-warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+                .badge-success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+                .actions-bar { text-align: right; margin-bottom: 12px; }
+                .btn-print { background-color: #007bff; color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-weight: bold; }
                 @media print {
-                    button { display: none; }
+                    .actions-bar { display: none; }
                     body { margin: 10px; }
                 }
             </style>
         </head>
         <body>
-            <h2>LAPORAN HASIL PEMINDAIAN FILE SCANNER</h2>
-            <div class="meta">
-                Tanggal Pemindaian: <?= date('d-m-Y H:i:s') ?> | Folder: <?= htmlspecialchars($targetDir, ENT_QUOTES, 'UTF-8') ?> | Oleh: <?= htmlspecialchars($_SESSION['realname'] ?? $_SESSION['username'] ?? 'System', ENT_QUOTES, 'UTF-8') ?>
+            <div class="actions-bar">
+                <button onclick="window.print();" class="btn-print">🖨️ Cetak Dokumen</button>
             </div>
             
-            <div style="text-align: right; margin-bottom: 10px;">
-                <button onclick="window.print();" style="padding: 5px 10px; font-size: 12px; cursor: pointer;">🖨️ Cetak</button>
+            <h2>LAPORAN PEMINDAIAN KEAMANAN BERKAS SLiMS</h2>
+            <div class="meta">
+                Tanggal: <?= date('d/m/Y H:i:s') ?> &nbsp;|&nbsp; Target: <strong><?= htmlspecialchars($targetDir, ENT_QUOTES, 'UTF-8') ?></strong> &nbsp;|&nbsp; Petugas: <?= htmlspecialchars($_SESSION['realname'] ?? $_SESSION['username'] ?? 'System', ENT_QUOTES, 'UTF-8') ?>
             </div>
             
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 5%">#</th>
-                        <th style="width: 40%">Path File (Relatif)</th>
-                        <th style="width: 15%">MIME Type</th>
+                        <th style="width: 5%">No</th>
+                        <th style="width: 35%">Path Berkas (Relatif)</th>
+                        <th style="width: 15%">Tipe MIME</th>
                         <th style="width: 10%">Status</th>
-                        <th style="width: 15%">Keterangan / Pola</th>
+                        <th style="width: 20%">Keterangan Temuan</th>
                         <th style="width: 15%">Hasil Tindakan</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($problematicResults)): ?>
                         <tr>
-                            <td colspan="6" style="text-align: center; padding: 20px;">Tidak ada temuan berkas bermasalah.</td>
+                            <td colspan="6" style="text-align: center; padding: 25px; color: #28a745; font-weight: bold;">
+                                ✅ Tidak ditemukan berkas berbahaya pada target ini.
+                            </td>
                         </tr>
                     <?php else: ?>
                         <?php 
                         $i = 1;
                         foreach ($problematicResults as $r): 
-                            $badgeClass = 'badge-danger';
-                            $details = is_array($r['msgs']) ? implode(', ', $r['msgs']) : $r['msgs'];
+                            $badgeClass = $r['status'] === 'danger' ? 'badge-danger' : 'badge-warning';
+                            $details = is_array($r['msgs']) ? implode(', ', $r['msgs']) : ($r['msgs'] ?? '-');
                         ?>
                             <tr>
                                 <td><?= $i++ ?></td>
-                                <td><?= htmlspecialchars($r['file'], ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><code><?= htmlspecialchars($r['file'], ENT_QUOTES, 'UTF-8') ?></code></td>
                                 <td><?= htmlspecialchars($r['mime'] ?? 'Unknown', ENT_QUOTES, 'UTF-8') ?></td>
                                 <td>
                                     <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars(strtoupper($r['status']), ENT_QUOTES, 'UTF-8') ?></span>
                                 </td>
                                 <td><?= htmlspecialchars($details, ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars($r['action_done'] !== '' ? $r['action_done'] : 'Terdeteksi (Belum Tindakan)', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td>
+                                    <?php if (!empty($r['action_done'])): ?>
+                                        <span class="badge badge-success"><?= htmlspecialchars($r['action_done'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php else: ?>
+                                        <span style="color: #888;">Menunggu Tindakan</span>
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </tbody>
             </table>
-            
-            <script>
-                window.onload = function() {
-                    window.print();
-                }
-            </script>
         </body>
         </html>
         <?php
