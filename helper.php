@@ -79,8 +79,7 @@ function amzscannerAllowedDirs(): array {
         'images/docs',
         'images/persons',
         'repository',
-        'images',
-        'files'
+        'images'
     ];
 }
 
@@ -97,7 +96,7 @@ function amzscannerDangerousExtensions(): array {
 }
 
 function amzscannerWebXssExtensions(): array {
-    return ['html', 'htm', 'js', 'svg'];
+    return ['html', 'htm', 'js'];
 }
 
 function amzscannerAllowedTypes(): array {
@@ -311,8 +310,11 @@ function amzscannerGetFilesRecursive(string $dirPath): array {
     $items = scandir($dirPath);
     if (!$items) return [];
 
+    // Skip internal SLiMS system directories if scanning root
+    $excludedDirs = ['.', '..', 'quarantine', 'backup', 'cache', 'tntsearch', 'membercard', 'reports', 'swfs', 'chat', 'akses_layanan'];
+
     foreach ($items as $item) {
-        if ($item === '.' || $item === '..') continue;
+        if (in_array($item, $excludedDirs, true)) continue;
         $fullPath = $dirPath . DIRECTORY_SEPARATOR . $item;
         if (is_dir($fullPath)) {
             $results = array_merge($results, amzscannerGetFilesRecursive($fullPath));
@@ -402,7 +404,7 @@ function amzscannerScanDir(string $dirPath, string $dirKey, array $forbiddenPatt
             $msgs[]  = 'Berkas skrip/executable terlarang (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
         } elseif (in_array($ext, $webXssExts, true)) {
             $suspicious = true;
-            $msgs[]     = 'Berkas skrip web/HTML/SVG (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
+            $msgs[]     = 'Berkas skrip web/HTML (' . htmlspecialchars($ext, ENT_QUOTES, 'UTF-8') . ')';
         }
 
         // 2. Check for double extension patterns (e.g. evil.php.jpg, photo.jpg.exe)
@@ -432,7 +434,7 @@ function amzscannerScanDir(string $dirPath, string $dirKey, array $forbiddenPatt
                 $msgs[]  = 'Tipe MIME tidak valid untuk folder gambar (' . htmlspecialchars($mimeType, ENT_QUOTES, 'UTF-8') . ')';
             }
         } else {
-            // Repository / files directory: check scannable text or script files
+            // Repository directory: check scannable text or script files
             $scannableExts = array_merge($dangerousExts, $webXssExts, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'txt', 'csv', 'xml']);
             if (in_array($ext, $scannableExts, true)) {
                 $matchedPatterns = amzscannerFileContainsPattern($normFullPath, $forbiddenPatterns, 2097152);
